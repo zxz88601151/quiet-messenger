@@ -1,0 +1,8 @@
+# Quiet Messenger Android Release Signing Configuration
+# Copy this file to key.properties and fill in your real values.
+# key.properties MUST be in .gitignore — never commit real passwords.
+
+storePassword=YOUR_STORE_PASSWORD
+keyPassword=YOUR_KEY_PASSWORD
+keyAlias=release
+storeFile=PATH_TO_YOUR_KEYSTORE/release.jks

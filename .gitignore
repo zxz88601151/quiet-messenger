@@ -1,0 +1,76 @@
+# === Secrets / environment (NEVER commit) ===
+.env
+.env.*
+!.env.example
+backend/.env
+deploy/nginx/certs/*.pem
+deploy/nginx/certs/*.key
+
+# === Local databases ===
+*.db
+*.sqlite
+*.sqlite3
+chat_dev.db
+chat_test.db
+_verify_tmp.db
+
+# === Python ===
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# === Flutter / Dart ===
+flutter/build/
+flutter/.dart_tool/
+flutter/.flutter-plugins
+flutter/.flutter-plugins-dependencies
+flutter/.packages
+flutter/pubspec.lock
+flutter/ios/Pods/
+flutter/ios/.symlinks/
+flutter/ios/Flutter/Flutter.framework
+flutter/ios/Flutter/Flutter.podspec
+flutter/linux/flutter/ephemeral/
+flutter/macos/Flutter/ephemeral/
+flutter/windows/flutter/ephemeral/
+
+# === Android ===
+flutter/android/.gradle/
+flutter/android/local.properties
+flutter/android/**/build/
+*.jks
+*.keystore
+key.properties
+*.iml
+
+# === IDE / Editor ===
+.idea/
+.vscode/
+.workbuddy/
+*.swp
+*.swo
+*~
+
+# === OS ===
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# === Logs ===
+*.log
+logs/
+
+# === Accidental / temp files ===
+id=,d.get(id),
+*.tmp
+*.bak
+
+# === PyInstaller ===
+desktop/build/
+desktop/dist/
+desktop/*.spec
+

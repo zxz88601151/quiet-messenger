@@ -1,0 +1,26 @@
+# === Secrets / environment (NEVER commit) ===
+.env
+.env.*
+!.env.example
+
+# === Local databases (SQLite dev/test artifacts) ===
+*.db
+*.sqlite
+*.sqlite3
+_verify_tmp.db
+chat_dev.db
+chat_test.db
+
+# === Python ===
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# === Editor / OS ===
+.idea/
+.vscode/
+.DS_Store
