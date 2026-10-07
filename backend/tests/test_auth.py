@@ -97,11 +97,14 @@ def test_refresh_ok(client, auth_headers):
 def test_refresh_revoked_reuse_old(client, auth_headers):
     creds = auth_headers()
     old = creds["refresh_token"]
-    # 轮换一次，旧令牌应失效
+    # 轮换一次
     r = client.post("/api/v1/auth/refresh", json={"refresh_token": old})
     assert r.status_code == 200
+    new = r.json()["refresh_token"]
+    # H-1：宽限期内重放旧 token 视为客户端重试（网络超时重发），放行并签发更新 token
     r2 = client.post("/api/v1/auth/refresh", json={"refresh_token": old})
-    assert r2.status_code == 401
+    assert r2.status_code == 200
+    assert r2.json()["refresh_token"] not in (old, new)
 
 
 def test_refresh_invalid_token(client):

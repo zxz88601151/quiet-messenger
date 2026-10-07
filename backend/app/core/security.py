@@ -87,10 +87,13 @@ def create_access_token(user_id: str, device_id: str | None = None) -> str:
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 
-def create_refresh_token_record(user_id: str, device_id: str) -> tuple[str, str]:
+def create_refresh_token_record(
+    user_id: str, device_id: str, family_id: uuid.UUID | None = None
+) -> tuple[str, str]:
     """签发 refresh token：落库哈希 + 返回明文。
 
     返回 (raw_token, token_hash)。明文仅本次返回给客户端，库内只存哈希。
+    H-1：family_id 用于轮换链追踪；不传则新起一个 family。
     """
     raw, token_hash = generate_refresh_token()
     expires_at = _now() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
@@ -101,6 +104,7 @@ def create_refresh_token_record(user_id: str, device_id: str) -> tuple[str, str]
             token_hash=token_hash,
             expires_at=expires_at,
             revoked=False,
+            family_id=family_id or uuid.uuid4(),
         )
         db.add(rec)
         db.commit()
@@ -117,16 +121,49 @@ def decode_token(token: str, expected_type: str) -> dict[str, Any]:
     return payload
 
 
+def _revoke_by_hash(db, token_hash: str) -> None:
+    """按哈希吊销（H-1：同时记录 revoked_at，供复用检测宽限判断）。"""
+    rec = db.execute(
+        select(RefreshToken).where(RefreshToken.token_hash == token_hash)
+    ).scalar_one_or_none()
+    if rec is not None and not rec.revoked:
+        rec.revoked = True
+        rec.revoked_at = _now()
+
+
 def revoke_refresh_token(raw_token: str) -> None:
-    """吊销 refresh token（明文 → 哈希 → 置 revoked）。"""
+    """吊销 refresh token（明文 → 哈希 → 置 revoked + revoked_at）。"""
     token_hash = hash_token(raw_token)
     with SessionLocal() as db:
-        rec = db.execute(
-            select(RefreshToken).where(RefreshToken.token_hash == token_hash)
-        ).scalar_one_or_none()
-        if rec is not None:
-            rec.revoked = True
-            db.commit()
+        _revoke_by_hash(db, token_hash)
+        db.commit()
+
+
+def revoke_token_family(db, family_id: uuid.UUID) -> int:
+    """H-1 熔断：吊销同一 family 下全部 token。返回被吊销数量。"""
+    now = _now()
+    recs = db.execute(
+        select(RefreshToken).where(
+            RefreshToken.family_id == family_id, RefreshToken.revoked.is_(False)
+        )
+    ).scalars().all()
+    for rec in recs:
+        rec.revoked = True
+        rec.revoked_at = now
+    return len(recs)
+
+
+def get_live_family_token(db, family_id: uuid.UUID) -> RefreshToken | None:
+    """H-1：取 family 内最新（created_at 倒序）的有效 token，用于宽限内重试签发。"""
+    return db.execute(
+        select(RefreshToken)
+        .where(
+            RefreshToken.family_id == family_id,
+            RefreshToken.revoked.is_(False),
+            RefreshToken.expires_at > _now(),
+        )
+        .order_by(RefreshToken.created_at.desc())
+    ).scalar_one_or_none()
 
 
 def verify_refresh_token(raw_token: str) -> RefreshToken | None:
@@ -135,13 +172,27 @@ def verify_refresh_token(raw_token: str) -> RefreshToken | None:
     校验链：哈希存在 + 未吊销 + 未过期。
     返回有效的 RefreshToken 记录，否则 None。
     """
+    rec, status = verify_refresh_token_with_status(raw_token)
+    return rec if status == "valid" else None
+
+
+def verify_refresh_token_with_status(raw_token: str) -> tuple[RefreshToken | None, str]:
+    """H-1：带状态的校验。
+
+    返回 (记录, 状态)，状态 ∈ {"valid", "revoked", "expired", "not_found"}。
+    注意：返回的 rec 绑定在已关闭的 session 上，仅可安全读取已加载的列属性
+    （id / user_id / device_id / family_id / revoked / revoked_at / expires_at）；
+    需要写操作时调用方应重新查询。
+    """
     token_hash = hash_token(raw_token)
     with SessionLocal() as db:
         rec = db.execute(
             select(RefreshToken).where(RefreshToken.token_hash == token_hash)
         ).scalar_one_or_none()
-        if rec is None or rec.revoked:
-            return None
+        if rec is None:
+            return None, "not_found"
+        if rec.revoked:
+            return rec, "revoked"
         if rec.expires_at.replace(tzinfo=timezone.utc) < _now():
-            return None
-        return rec
+            return None, "expired"
+        return rec, "valid"

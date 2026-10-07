@@ -60,6 +60,19 @@ def _clean_db():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    """每个测试前清空进程内限流计数，保证限流用例间相互独立。
+
+    （安全补丁 S-2 / H-3：InMemoryRateLimiter 为进程级单例。）
+    """
+    from app.core.rate_limiter import limiter
+
+    limiter.reset()
+    yield
+    limiter.reset()
+
+
 @pytest.fixture(scope="session")
 def client():
     from app.main import app

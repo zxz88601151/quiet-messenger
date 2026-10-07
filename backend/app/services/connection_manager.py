@@ -141,6 +141,22 @@ class ConnectionManager:
     def user_connection_count(self, user_id: str) -> int:
         return len(self._user_to_conns.get(user_id, set()))
 
+    async def close_all_user_devices(self, user_id: str) -> int:
+        """S-1：关闭该用户全部 live WS 连接（如改密后强制下线）。
+
+        返回实际关闭的连接数；单条关闭失败不影响其余。
+        """
+        conns = self.get_user_connections(user_id)
+        closed = 0
+        for conn in conns:
+            try:
+                await conn.websocket.close(code=4401)
+                closed += 1
+            except Exception:
+                pass
+            await self.remove(conn.conn_id)
+        return closed
+
     # ---- 发送 ----
     async def send(self, conn: Connection, event: dict[str, Any]) -> bool:
         """发送到单连接。失败（断连）返回 False 并清理。"""

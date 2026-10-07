@@ -6,6 +6,9 @@
 """
 from __future__ import annotations
 
+import pytest
+from starlette.websockets import WebSocketDisconnect
+
 from app.config import get_settings
 from app.services.connection_manager import manager
 
@@ -38,30 +41,30 @@ def test_ws_auth_success(client, auth_headers):
 
 # ---------------- 缺 token 拒绝 ----------------
 def test_ws_missing_token_rejected(client):
-    with client.websocket_connect("/ws/v1") as ws:
-        # 服务端立即发 connection.error 再 close(4401)
-        err = ws.receive_json()
-        assert err["type"] == "connection.error"
-        assert err["payload"]["code"] == "WS_AUTH_FAILED"
+    # H-3 修复后：未认证连接在 accept 之前被拒绝，握手直接失败，
+    # 不再有 connection.error 帧（连接从未被 accept）。
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/ws/v1"):
+            pass  # pragma: no cover
 
 
 def test_ws_missing_token_close_code(client):
-    with client.websocket_connect("/ws/v1") as ws:
-        # 收一帧后连接应被服务端关闭（4401 = 自定义未认证码）
-        ws.receive_json()
-        # 再尝试读取应触发关闭
-        try:
-            ws.receive_json()
-        except Exception:
-            pass  # 关闭即符合预期
+    # H-3 修复后：握手阶段即关闭，code 应为 4401（自定义未认证码）。
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/v1"):
+            pass  # pragma: no cover
+    assert exc_info.value.code == 4401
 
 
 # ---------------- 无效 token 拒绝 ----------------
 def test_ws_invalid_token_rejected(client):
-    with client.websocket_connect("/ws/v1", headers={"Authorization": "Bearer not-a-real-token"}) as ws:
-        err = ws.receive_json()
-        assert err["type"] == "connection.error"
-        assert err["payload"]["code"] == "WS_AUTH_FAILED"
+    # H-3 修复后：无效 token 同样在 accept 之前被拒绝，握手直接失败。
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(
+            "/ws/v1", headers={"Authorization": "Bearer not-a-real-token"}
+        ):
+            pass  # pragma: no cover
+    assert exc_info.value.code == 4401
 
 
 # ---------------- 单用户多设备双连接 ----------------
@@ -152,6 +155,11 @@ def test_ws_client_pong(client, auth_headers):
 
 # ---------------- 安全：token 不出现在错误响应 ----------------
 def test_ws_error_no_token_leak(client):
-    with client.websocket_connect("/ws/v1", headers={"Authorization": "Bearer leaked-should-not-appear"}) as ws:
-        err = ws.receive_json()
-        assert "leaked-should-not-appear" not in str(err)
+    # H-3 修复后：无效 token 在 accept 前被拒绝，握手直接失败；
+    # 拒绝帧不携带任何 token 回显。
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect(
+            "/ws/v1",
+            headers={"Authorization": "Bearer leaked-should-not-appear"},
+        ):
+            pass  # pragma: no cover

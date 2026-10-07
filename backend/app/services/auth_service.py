@@ -6,8 +6,10 @@
 严格服从 API_CONTRACT §1 + DATA_MODEL。
 - 密码 bcrypt；库只存 password_hash。
 - 不泄露用户存在性（forgot-password 统一响应）。
-- reset code 为 Dev Mock（生产接短信），具备生命周期 + 单次使用。
-- 重置密码后旧 refresh token 不强制全量失效（Contract 未定义 → 不自行扩大；仅本机下次 refresh 走正常轮换）。
+- reset code 为 Dev Mock（生产接短信），具备生命周期 + 单次使用
+  + 连续失败作废（S-2 纵深）。
+- 重置密码后吊销该用户全部 refresh token 与设备会话（S-1 修复）。
+- refresh token 轮换带 family 追踪与复用检测（H-1 修复）。
 """
 from __future__ import annotations
 
@@ -28,15 +30,27 @@ from app.core.security import (
     TOKEN_TYPE_REFRESH,
     create_access_token,
     create_refresh_token_record,
+    get_live_family_token,
     hash_password,
     revoke_refresh_token,
+    revoke_token_family,
     verify_password,
+    verify_refresh_token_with_status,
 )
 from app.models.device import Device
 from app.models.login_audit import LoginAuditLog
+from app.models.token import RefreshToken
 from app.models.user import User
 from app.schemas.auth import DeviceInput
 from app.schemas.user import to_device_public, to_user_public
+
+
+# S-2 纵深：同一 phone 针对当前 code 连续输错超过此次数，直接作废 code。
+# 与路由层限流配合：限流防"广撒网"爆破，此计数防针对单号的慢速试错。
+MAX_RESET_CODE_ATTEMPTS = 10
+# H-1：已吊销 token 在宽限期内重放且确为轮换链上的重试 → 视为合法重试；
+# 超过宽限或 device 已吊销（logout 路径）→ 视为盗用，熔断整个 family。
+REUSE_GRACE_SECONDS = 60
 
 
 def _now() -> datetime:
@@ -83,6 +97,7 @@ class _ResetCodeStore:
 
     def __init__(self) -> None:
         self._store: dict[str, dict] = {}
+        self._failures: dict[str, int] = {}  # phone -> 针对当前 code 的连续失败次数
 
     def issue(self, phone: str, ttl_seconds: int = 600) -> str:
         code = f"{secrets.randbelow(1_000_000):06d}"
@@ -91,6 +106,7 @@ class _ResetCodeStore:
             "expires_at": _now() + timedelta(seconds=ttl_seconds),
             "used": False,
         }
+        self._failures.pop(phone, None)  # 新码签发，失败计数清零
         return code
 
     def verify(self, phone: str, code: str) -> bool:
@@ -101,7 +117,14 @@ class _ResetCodeStore:
             return False
         if secrets.compare_digest(rec["code"], code):
             rec["used"] = True
+            self._failures.pop(phone, None)
             return True
+        # S-2 纵深：连续失败超限则直接作废当前 code，攻击者无法对同一个
+        # code 无限试错（需重新走 forgot-password 拿新码）。
+        fails = self._failures.get(phone, 0) + 1
+        self._failures[phone] = fails
+        if fails >= MAX_RESET_CODE_ATTEMPTS:
+            rec["used"] = True
         return False
 
 
@@ -246,25 +269,84 @@ def login(
     return user, device, access, raw_refresh
 
 
-# ---------------- Refresh（轮换）----------------
+# ---------------- Refresh（轮换 + H-1 复用检测）----------------
 def refresh(raw_token: str) -> tuple[User, Device, str, str]:
     from app.db.base import SessionLocal
-    from app.core.security import verify_refresh_token
+    from app.core.security import _revoke_by_hash
 
-    rec = verify_refresh_token(raw_token)
-    if rec is None:
+    rec, status = verify_refresh_token_with_status(raw_token)
+    if rec is None or status in ("not_found", "expired"):
         raise unauthorized("Refresh Token 无效、已过期或被吊销")
-    # 轮换：先吊销旧，再发新
-    revoke_refresh_token(raw_token)
+
+    if status == "valid":
+        # 正常轮换：按哈希吊销旧 token（记 revoked_at），新 token 继承 family
+        with SessionLocal() as db:
+            db_rec = db.execute(
+                select(RefreshToken).where(RefreshToken.id == rec.id)
+            ).scalar_one_or_none()
+            if db_rec is None:
+                raise unauthorized("Refresh Token 无效")
+            _revoke_by_hash(db, db_rec.token_hash)
+            family_id = db_rec.family_id or uuid.uuid4()
+            user = db.execute(select(User).where(User.id == db_rec.user_id)).scalar_one_or_none()
+            device = db.execute(select(Device).where(Device.id == db_rec.device_id)).scalar_one_or_none()
+            if user is None or device is None:
+                db.commit()
+                raise unauthorized("用户或设备不存在")
+            access = create_access_token(str(user.id), str(device.id))
+            new_raw, _ = create_refresh_token_record(
+                str(user.id), str(device.id), family_id=family_id
+            )
+            db.commit()
+            return user, device, access, new_raw
+
+    # ---- H-1：已吊销 token 再次出现 → 复用检测 ----
     with SessionLocal() as db:
-        user = db.execute(select(User).where(User.id == rec.user_id)).scalar_one_or_none()
-        device = db.execute(select(Device).where(Device.id == rec.device_id)).scalar_one_or_none()
-    if user is None or device is None:
-        raise unauthorized("用户或设备不存在")
-    # 正确签发：access = JWT（短效）；new_raw = 不透明 refresh 明文（哈希落库）
-    access = create_access_token(str(user.id), str(device.id))
-    new_raw, _ = create_refresh_token_record(str(user.id), str(device.id))
-    return user, device, access, new_raw
+        db_rec = db.execute(
+            select(RefreshToken).where(RefreshToken.id == rec.id)
+        ).scalar_one_or_none()
+        if db_rec is None:
+            raise unauthorized("Refresh Token 无效")
+        family_id = db_rec.family_id
+        device = db.execute(
+            select(Device).where(Device.id == db_rec.device_id)
+        ).scalar_one_or_none()
+        # logout / 设备吊销路径：设备已 revoked → 无宽限，直接熔断
+        device_revoked = device is not None and device.revoked_at is not None
+        within_grace = (
+            db_rec.revoked_at is not None
+            and (_now() - db_rec.revoked_at.replace(tzinfo=timezone.utc)).total_seconds()
+            <= REUSE_GRACE_SECONDS
+        )
+        live = get_live_family_token(db, family_id) if family_id else None
+        if not device_revoked and within_grace and live is not None:
+            # 宽限内的轮换重试（如客户端超时重发）：视为合法重试，
+            # 用 family 内最新 live token 的身份重新签发一次
+            _revoke_by_hash(db, live.token_hash)
+            new_family = live.family_id or uuid.uuid4()
+            user = db.execute(select(User).where(User.id == live.user_id)).scalar_one_or_none()
+            dev = db.execute(select(Device).where(Device.id == live.device_id)).scalar_one_or_none()
+            if user is None or dev is None:
+                db.commit()
+                raise unauthorized("用户或设备不存在")
+            access = create_access_token(str(user.id), str(dev.id))
+            new_raw, _ = create_refresh_token_record(
+                str(user.id), str(dev.id), family_id=new_family
+            )
+            db.commit()
+            return user, dev, access, new_raw
+        # 否则视为盗用：熔断整个 family 并记审计
+        if family_id is not None:
+            revoke_token_family(db, family_id)
+        _write_audit_log(
+            db,
+            user_id=db_rec.user_id,
+            identifier=str(db_rec.user_id),
+            action="refresh_token_reuse_detected",
+            failure_reason="revoked_token_reused",
+        )
+        db.commit()
+        raise unauthorized("检测到 Refresh Token 复用，已吊销该设备全部会话，请重新登录")
 
 
 # ---------------- Logout ----------------
@@ -306,6 +388,40 @@ def logout(
 
 
 # ---------------- Forgot / Reset ----------------
+def revoke_all_user_sessions(db: Session, user: User) -> None:
+    """S-1：吊销该用户全部 refresh token 与全部设备会话。
+
+    改密场景通常意味着凭证可能已失陷：必须让所有已签发的 refresh token
+    即时失效，并作废全部设备信任；否则攻击者可凭旧 refresh token
+    继续签发 access token，改密形同虚设。
+    注意：commit 由调用方统一完成（含 password_hash 更新），保证原子性。
+    """
+    now = _now()
+    tokens = (
+        db.execute(
+            select(RefreshToken).where(
+                RefreshToken.user_id == user.id, RefreshToken.revoked.is_(False)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for tok in tokens:
+        tok.revoked = True
+        tok.revoked_at = now
+    devices = (
+        db.execute(
+            select(Device).where(
+                Device.user_id == user.id, Device.revoked_at.is_(None)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for dev in devices:
+        dev.revoked_at = now
+
+
 def forgot_password(db: Session, phone: str, dev_mode: bool) -> tuple[bool, str | None]:
     # 不泄露用户是否存在：无论账号是否存在都返回 ok=true。
     # Dev 模式：若存在账号才签发 dev_code（仅用于演示；生产接短信）。
@@ -316,13 +432,22 @@ def forgot_password(db: Session, phone: str, dev_mode: bool) -> tuple[bool, str 
     return True, dev_code
 
 
-def reset_password(db: Session, phone: str, code: str, new_password: str) -> bool:
+def reset_password(
+    db: Session, phone: str, code: str, new_password: str
+) -> tuple[bool, str | None]:
+    """重置密码。成功时同时吊销该用户全部设备会话（S-1 修复）。
+
+    返回 (ok, user_id)：user_id 供路由层做 WS 收尾（断开该用户全部 live 连接）。
+    """
     user = db.execute(select(User).where(User.phone == phone)).scalar_one_or_none()
     if user is None:
         # 统一响应 ok=false（不泄露账号是否存在）；这里由路由决定返回 200/400
-        return False
+        return False, None
     if not reset_code_store.verify(phone, code):
-        return False
+        return False, None
     user.password_hash = hash_password(new_password)
+    # S-1：改密即吊销全部会话（refresh token + 设备），与 password_hash
+    # 更新同一 commit 落库，保证原子性。
+    revoke_all_user_sessions(db, user)
     db.commit()
-    return True
+    return True, str(user.id)

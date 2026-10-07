@@ -4,6 +4,7 @@
 鉴权：原生客户端优先在握手时携带 `Authorization: Bearer <access_token>` 头
       （Dart/websockets 均支持自定义头）。**禁止把 token 放进 URL query**（§8 安全红线）。
       缺失/无效/过期令牌 → 拒绝连接（close code 4401），不进入业务事件。
+      H-3：鉴权在 accept() 之前完成；握手限流 20 次/分钟/IP（accept 之前）。
 认证成功后发送：connection.authenticated → connection.ready（§15）。
 
 事件信封（§13/§14）：
@@ -22,6 +23,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 
 from app.config import get_settings
 from app.core import security
+from app.core.rate_limiter import POLICY_WS_HANDSHAKE, limiter
 from app.db.base import SessionLocal
 from app.services.connection_manager import (
     ConnectionState,
@@ -53,28 +55,33 @@ def _auth_from_headers(websocket: WebSocket) -> tuple[str, str | None] | None:
     return str(user_id), payload.get("device_id")
 
 
-async def _close_with_error(websocket: WebSocket, code: int, msg: str) -> None:
-    try:
-        await websocket.send_json(
-            make_event("connection.error", {"code": "WS_AUTH_FAILED", "message": msg})
-        )
-    except Exception:
-        pass
-    await websocket.close(code=code)
+def _ws_client_ip(websocket: WebSocket) -> str:
+    """H-3：握手限流 key 用 IP。注：经过可信反代时应改读 X-Forwarded-For。"""
+    return websocket.client.host if websocket.client else "unknown"
 
 
 @router.websocket("")
 async def ws_connect(websocket: WebSocket) -> None:
     """统一 WebSocket 入口（/ws/v1）。
 
-    流程：accept → 读 Bearer 头鉴权 → 失败 close(4401) → 成功注册 →
-          connection.authenticated + connection.ready → 心跳 + 消息循环 → 清理。
+    H-3 修复后流程：握手限流（20/分钟/IP）→ 读 Bearer 头鉴权（accept 之前）→
+    失败直接 close(4401) → accept → 注册 →
+    connection.authenticated + connection.ready → 心跳 + 消息循环 → 清理。
+
+    关键：未认证连接永不 accept，不占用应用层资源（连接/注册表/心跳任务），
+    从根上消除连接洪水 DoS 面。
     """
-    await websocket.accept()
+    # H-3：握手限流先行（accept 之前）
+    if not limiter.check(f"ws_handshake:{_ws_client_ip(websocket)}", POLICY_WS_HANDSHAKE):
+        await websocket.close(code=4401)
+        return
+    # H-3：鉴权必须在 accept() 之前完成。Starlette 允许在 accept 前读取
+    # websocket.headers；失败直接 close，不 accept。
     auth_result = _auth_from_headers(websocket)
     if auth_result is None:
-        await _close_with_error(websocket, code=4401, msg="缺少或无效的认证令牌")
+        await websocket.close(code=4401)
         return
+    await websocket.accept()
 
     user_id, device_id = auth_result
     # device_id 可能为空（纯 access token 无 device claim）→ 用 user 维度兜底标识。

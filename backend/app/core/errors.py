@@ -31,6 +31,11 @@ def duplicate_user(message: str = "用户名或手机号已存在") -> HTTPExcep
     return error_response("DUPLICATE_USER", message, status.HTTP_409_CONFLICT)
 
 
+def rate_limited(message: str = "请求过于频繁，请稍后再试") -> HTTPException:
+    """安全补丁 S-2 / H-3：限流拒绝（429）。"""
+    return error_response("RATE_LIMITED", message, status.HTTP_429_TOO_MANY_REQUESTS)
+
+
 def not_found(message: str = "资源不存在") -> HTTPException:
     return error_response("NOT_FOUND", message, status.HTTP_404_NOT_FOUND)
 

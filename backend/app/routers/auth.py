@@ -15,7 +15,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request, status
 
 from app.config import get_settings
-from app.core.deps import get_db
+from app.core.deps import (
+    get_db,
+    rate_limit_forgot_password,
+    rate_limit_reset_password,
+)
 from app.core.errors import validation_error
 from app.schemas.auth import (
     ForgotPasswordRequest,
@@ -27,6 +31,7 @@ from app.schemas.auth import (
 )
 from app.schemas.user import to_device_public, to_user_public
 from app.services import auth_service
+from app.services.connection_manager import manager
 
 settings = get_settings()
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
@@ -79,7 +84,12 @@ def logout(data: LogoutRequest, request: Request):
 
 
 @router.post("/forgot-password")
-def forgot_password(data: ForgotPasswordRequest, db=Depends(get_db)):
+def forgot_password(
+    data: ForgotPasswordRequest,
+    request: Request,
+    db=Depends(get_db),
+    _rl=Depends(rate_limit_forgot_password),
+):
     ok, dev_code = auth_service.forgot_password(
         db, data.phone, dev_mode=settings.ENVIRONMENT != "production"
     )
@@ -90,9 +100,21 @@ def forgot_password(data: ForgotPasswordRequest, db=Depends(get_db)):
 
 
 @router.post("/reset-password")
-def reset_password(data: ResetPasswordRequest, db=Depends(get_db)):
-    ok = auth_service.reset_password(db, data.phone, data.code, data.new_password)
+async def reset_password(
+    data: ResetPasswordRequest,
+    request: Request,
+    db=Depends(get_db),
+    _rl=Depends(rate_limit_reset_password),
+):
+    ok, user_id = auth_service.reset_password(db, data.phone, data.code, data.new_password)
     if not ok:
         # 不区分"账号不存在"与"code 错误"以防水枚举；统一 400 VALIDATION_ERROR
         raise validation_error("验证码无效或已使用")
+    # S-1 收尾：DB 吊销已在 service 内 commit（权威状态）；此处仅断开该用户
+    # 全部 live WS 连接。失败不影响主流程（DB 状态为准）。
+    if user_id:
+        try:
+            await manager.close_all_user_devices(user_id)
+        except Exception:
+            pass
     return {"ok": True}
