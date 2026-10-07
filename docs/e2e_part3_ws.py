@@ -1,5 +1,5 @@
 """V1.1 Staging Backend E2E — Part 3: WebSocket infrastructure-layer verification.
-Tests real WS at wss://api-staging.ycqinnan.cn/ws/v1.
+Tests real WS at wss://api.example.com/ws/v1.
 - No token -> expect close 4401
 - Valid Bearer -> connection.authenticated + connection.ready + ping/pong
 - Attempt message.send -> observe whether business broadcast (message.created) occurs
@@ -7,7 +7,7 @@ Tests real WS at wss://api-staging.ycqinnan.cn/ws/v1.
 """
 import asyncio, json, datetime, websockets
 
-WS_URL = "wss://api-staging.ycqinnan.cn/ws/v1"
+WS_URL = "wss://api.example.com/ws/v1"
 EV_PATH = "/tmp/e2e_evidence.json"
 
 def now_iso(): return datetime.datetime.now(datetime.timezone.utc).isoformat()

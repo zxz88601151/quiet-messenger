@@ -7,7 +7,7 @@ Evidence -> /tmp/staging_hardening/h1.json
 """
 import urllib.request, json, ssl, time, datetime, threading, random, string, os
 
-BASE = "https://api-staging.ycqinnan.cn"
+BASE = "https://api.example.com"
 CTX = ssl.create_default_context(); CTX.check_hostname = False; CTX.verify_mode = ssl.CERT_NONE
 OUTDIR = "/tmp/staging_hardening"
 os.makedirs(OUTDIR, exist_ok=True)

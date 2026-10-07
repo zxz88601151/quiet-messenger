@@ -2,7 +2,7 @@
 
 > 调查类型：READ-ONLY / TEST + ROOT-CAUSE INVESTIGATION
 > 调查时间：2026-08-25
-> 测试环境：Staging API (https://api-staging.ycqinnan.cn/api/v1)
+> 测试环境：Staging API (https://api.example.com/api/v1)
 > 客户端：Flutter Android (Release APK)
 
 ---
@@ -20,7 +20,7 @@
 
 ## 2. Test Environment
 
-- API Base: `https://api-staging.ycqinnan.cn/api/v1`
+- API Base: `https://api.example.com/api/v1`
 - 测试账号：全新生成（`regtest_4ad54483` / `19887591795`）
 - Device ID: `regtest-device-b4740514`
 - 后端：Nginx 1.24.0 (Ubuntu) + FastAPI

@@ -25,12 +25,13 @@ class ApiConfig {
   static const Map<ApiEnvironment, String> _baseUrls = {
     // Local backend (docker-compose / run-backend-staging.sh)
     ApiEnvironment.development: 'http://127.0.0.1:8000',
-    // Verified Staging API host (M1 DNS PASS: api-staging.ycqinnan.cn →
-    // 111.229.225.123). Real device cannot use LAN IP / localhost, so the
-    // approved Staging domain is used. HTTPS is the production intent
-    // (M4 will provision Nginx + Let's Encrypt cert for this subdomain).
-    // Until M4 completes, real-device E2E against this host is NOT VERIFIED.
-    ApiEnvironment.staging: 'https://api-staging.ycqinnan.cn',
+    // PLACEHOLDER — replace with your own staging host before use.
+    // The original internal staging domain and server IP were removed when
+    // this repository was published; `api.example.com` (RFC 2606 reserved)
+    // and 203.0.113.x (RFC 5737 reserved) are non-routable placeholders.
+    // A real device cannot reach LAN IP / localhost, so point this at your own
+    // publicly reachable HTTPS endpoint (e.g. Nginx + Let's Encrypt).
+    ApiEnvironment.staging: 'https://api.example.com',
   };
 
   static String get baseUrl => _baseUrls[environment]!;

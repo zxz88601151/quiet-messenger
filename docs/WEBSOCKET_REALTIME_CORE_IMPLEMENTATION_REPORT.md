@@ -11,7 +11,7 @@
 ## 1. Current Architecture
 
 ### Backend
-- **WebSocket endpoint:** `wss://api-staging.ycqinnan.cn/ws/v1` (mounted outside `/api/v1` REST prefix)
+- **WebSocket endpoint:** `wss://api.example.com/ws/v1` (mounted outside `/api/v1` REST prefix)
 - **Authentication:** Bearer token in query param, validated via JWT
 - **Connection Manager:** `ConnectionManager` — user_id → multiple connections (multi-device)
 - **Heartbeat:** 25s interval, 60s timeout, 30s cleanup
@@ -552,7 +552,7 @@ flutter test
 - **Runtime:** Requires manual launch for integration verification
 
 ### Backend
-- **Staging:** `https://api-staging.ycqinnan.cn`
+- **Staging:** `https://api.example.com`
 - **Health:** `{"status":"ok","service":"minimal-chat","phase":"2D"}`
 - **Deployment:** Docker compose build + up -d ✅
 

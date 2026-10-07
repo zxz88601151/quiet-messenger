@@ -4,7 +4,7 @@ Evidence written to /tmp/e2e_evidence.json (append mode via reload).
 """
 import urllib.request, json, ssl, time, datetime, sys
 
-BASE = "https://api-staging.ycqinnan.cn"
+BASE = "https://api.example.com"
 CTX = ssl.create_default_context()
 CTX.check_hostname = False
 CTX.verify_mode = ssl.CERT_NONE

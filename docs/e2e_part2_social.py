@@ -3,7 +3,7 @@ Loads tokens from /tmp/e2e_evidence.json. Pure stdlib + websockets. No mutations
 """
 import urllib.request, json, ssl, time, datetime
 
-BASE = "https://api-staging.ycqinnan.cn"
+BASE = "https://api.example.com"
 CTX = ssl.create_default_context(); CTX.check_hostname = False; CTX.verify_mode = ssl.CERT_NONE
 EV_PATH = "/tmp/e2e_evidence.json"
 
