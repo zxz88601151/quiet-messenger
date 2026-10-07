@@ -80,7 +80,9 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.44.0"
+          # Must be >= 3.47: pubspec.yaml pins `sdk: ^3.12.2`, but Flutter 3.44
+          # ships Dart 3.12.0, which fails version solving.
+          flutter-version: "3.47.6"
           cache: true
 
       - name: Install dependencies
